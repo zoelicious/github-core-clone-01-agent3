@@ -1,0 +1,1 @@
+{"description":"A GitHub-compatible git forge: git smart HTTP, REST v3, GraphQL v4 and MCP on one Node process, with an on-disk content-addressed object store","engines":{"node":">=22.18"},"license":"MIT","name":"forge-disk","private":true,"scripts":{"start":"node --experimental-strip-types main.ts"},"type":"module","version":"1.0.0"}
