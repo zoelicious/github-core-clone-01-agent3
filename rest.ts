@@ -366,13 +366,14 @@ function treeAtPath(
 // ---------------------------------------------------------------------------
 
 export function handleRest(store: ForgeStore, req: RestRequest): RestResponse | null {
-  if (!isAuthed(req)) return errorJson(401, 'Bad credentials');
-  const seg = req.segments;
-  const method = req.method;
   const commonHeaders: Record<string, string> = {
     'X-OAuth-Scopes': 'repo, user',
     'X-GitHub-Request-Id': store.nextRequestId(),
   };
+  // The 401 is a REST reply too: it must carry X-GitHub-Request-Id like any other.
+  if (!isAuthed(req)) return json(401, { message: 'Bad credentials' }, commonHeaders);
+  const seg = req.segments;
+  const method = req.method;
 
   // GET /api/v3
   if (seg.length === 0) {
@@ -471,6 +472,22 @@ export function handleRest(store: ForgeStore, req: RestRequest): RestResponse | 
       return errorJson(404, 'Not Found');
     }
 
+    // GET /repos/{o}/{r}/branches — list every branch with its tip.
+    if (rest.length === 1 && rest[0] === 'branches' && method === 'GET') {
+      const branches = store
+        .listRefs(owner, name, repo.defaultBranch)
+        .filter((ref) => ref.name.startsWith('refs/heads/'))
+        .map((ref) => {
+          const branch = ref.name.slice('refs/heads/'.length);
+          return {
+            name: branch,
+            commit: { sha: ref.oid, url: `/repos/${owner}/${name}/commits/${ref.oid}` },
+            protected: false,
+          };
+        });
+      return json(200, branches, commonHeaders);
+    }
+
     // GET /repos/{o}/{r}/branches/{branch}
     if (rest.length === 2 && rest[0] === 'branches' && method === 'GET') {
       const branch = rest[1]!;
@@ -479,6 +496,34 @@ export function handleRest(store: ForgeStore, req: RestRequest): RestResponse | 
       return json(
         200,
         { name: branch, commit: { sha: tip, url: `/repos/${owner}/${name}/commits/${tip}` }, protected: false },
+        commonHeaders,
+      );
+    }
+
+    // POST /repos/{o}/{r}/git/refs — create a branch ref at a commit sha.
+    if (rest.length === 2 && rest[0] === 'git' && rest[1] === 'refs' && method === 'POST') {
+      const parsed = parseJsonBody(req);
+      if (!parsed.ok) return parsed.response;
+      const ref = asString(parsed.value['ref']);
+      const sha = asString(parsed.value['sha']);
+      if (ref === undefined || !ref.startsWith('refs/heads/') || ref === 'refs/heads/') {
+        return errorJson(422, 'Invalid ref: only refs/heads/<branch> can be created here');
+      }
+      if (sha === undefined || store.commitInfo(sha) === undefined) {
+        return errorJson(422, 'Invalid sha: not a known commit');
+      }
+      if (store.getRef(owner, name, ref) !== undefined) {
+        return errorJson(422, 'Reference already exists');
+      }
+      store.setRef(owner, name, ref, sha);
+      return json(
+        201,
+        {
+          ref,
+          node_id: globalId('Ref', owner, name),
+          url: `/repos/${owner}/${name}/git/refs/${ref}`,
+          object: { sha, type: 'commit', url: `/repos/${owner}/${name}/git/commits/${sha}` },
+        },
         commonHeaders,
       );
     }
@@ -632,7 +677,17 @@ export function handleRest(store: ForgeStore, req: RestRequest): RestResponse | 
         if (method === 'GET') {
           const state = req.query.get('state') ?? 'open';
           const filtered = repo.issues.filter((issue) => state === 'all' || issue.state === state);
-          const { page, link } = paginate(filtered, req.query, `/api/v3/repos/${owner}/${name}/issues`, req.origin);
+          // sort=created orders by creation sequence (seq): issues share one
+          // fixed created_at, so the timestamp alone cannot order them.
+          // direction=desc (newest first) is the GitHub default.
+          let ordered = filtered;
+          if (req.query.get('sort') === 'created') {
+            const direction = req.query.get('direction') ?? 'desc';
+            ordered = [...filtered].sort((a, b) =>
+              direction === 'asc' ? a.seq - b.seq : b.seq - a.seq,
+            );
+          }
+          const { page, link } = paginate(ordered, req.query, `/api/v3/repos/${owner}/${name}/issues`, req.origin);
           const headers: Record<string, string> = { ...commonHeaders };
           if (link) headers['Link'] = link;
           return json(200, page.map((issue) => issueJson(store, repo, issue)), headers);

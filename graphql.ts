@@ -482,7 +482,11 @@ function executeSelections(node: NodeObject, selections: SelectionNode[], ctx: C
 function executeField(node: NodeObject, field: FieldNode, ctx: Ctx): unknown {
   const store = ctx.store;
   const typeName = typeNameOf(node);
-  const known = SCHEMA_FIELDS[typeName] ?? [];
+  // Introspection nodes are named __Type/__Schema at runtime but 'Type'/'Schema'
+  // in the schema map: normalise before the known-field lookup, or every
+  // __type field (fields, enumValues, ...) reads as unknown.
+  const schemaKey = typeName === '__Type' ? 'Type' : typeName === '__Schema' ? 'Schema' : typeName;
+  const known = SCHEMA_FIELDS[schemaKey] ?? [];
   const isIntrospection = field.name === '__typename' || field.name === '__schema' || field.name === '__type';
   if (!isIntrospection && !known.includes(field.name)) {
     fieldError(ctx, typeName, field.name);
